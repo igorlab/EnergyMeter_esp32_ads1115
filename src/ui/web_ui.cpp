@@ -1,5 +1,6 @@
 #include "ui/web_ui.h"
 
+#include <ESPmDNS.h>
 #include <Preferences.h>
 #include <SD.h>
 #include <WebServer.h>
@@ -107,6 +108,12 @@ void WebUi::run() {
     http = new ::WebServer(cfg_.port);
     routes();
     http->begin();
+
+    // §64: відсутність mDNS не привід зупинятись — лишається numeric IP.
+    if (MDNS.begin(cfg_.hostname)) {
+        MDNS.addService("http", "tcp", cfg_.port);
+    }
+
     up_ = true;
 
     for (;;) {
