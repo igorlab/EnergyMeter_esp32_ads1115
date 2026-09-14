@@ -29,6 +29,7 @@
 #include "measurement/core.h"
 #include "storage/sd_logger.h"
 #include "system/battery_profile.h"
+#include "system/test_session.h"
 #include "system/test_state.h"
 #include "ui/console.h"
 #include "ui/tft_display.h"
@@ -53,12 +54,9 @@ static ui::WebUi             web;
 static SemaphoreHandle_t spi_bus = nullptr;
 
 static sys::BatteryProfile profile;
-static sys::TestState      pending{};
-static bool  has_pending = false;
-static bool  resume_armed = false;   // наступний старт продовжує, а не починає
+static sys::TestSession    session;
 static float soc_pct   = NAN;   // те, що показуємо
 static float soc_rest  = NAN;   // остання оцінка за напругою спокою
-static float soc_start = NAN;   // з чого починався поточний тест
 // Внутрішній опір: або з профілю, або заміряний на стрибку струму.
 static float r_measured = 0.0f;
 static float rest_v = NAN;          // остання напруга у справжньому спокої
@@ -86,16 +84,6 @@ static float medianR() {
     return t[r_count / 2];
 }
 static float soc_ocv = NAN;         // напруга спокою, з якої взято відсоток
-static bool  prev_running = false;
-static meas::Fault prev_fault = meas::Fault::NONE;
-static uint32_t next_state_save = 0;
-
-// Автозупинка тесту (§29, §32). Вимикається командою `autostop off`.
-static bool     auto_stop = true;
-static uint32_t quiet_since = 0;     // коли струм зник
-static float    v_at_quiet = NAN;    // напруга в ТОЙ момент, не після
-static bool     warned_break = false;
-constexpr uint32_t kQuietHoldMs = 60000;   // хвилина тиші до рішення
 
 static void applyProfile() {
     meas::SafetyLimits lim;
@@ -219,94 +207,11 @@ static void updateSoc() {
     }
 }
 
-// Старт = НОВИЙ тест: лічильники обнуляються. Інакше файл і тест
-// розходяться — логер відкриває новий файл на кожному старті, а інтегратор
-// продовжує рахувати, і колонка Ah у новому файлі починається не з нуля.
-// Саме так у TEST_0022 з'явилися успадковані 20.6 мАг від TEST_0021.
-//
-// Виняток один: після `resume` наступний старт продовжує відновлений тест.
-static void startTest() {
-    if (resume_armed) {
-        resume_armed = false;
-    } else {
-        core.setIntegrating(false);
-        core.resetIntegration();
-    }
-    core.setIntegrating(true);
-}
-
-// Завершення тесту визначається ПАРОЮ умов: струм зник І напруга каже, що
-// саме сталося. Нульовий струм сам по собі означає ще й обрив навантаження
-// чи відійшлий контакт, і зупиняти по ньому означало б убити багатогодинний
-// розряд від секундного дребезгу.
-//
-// Повертає причину або nullptr, якщо зупиняти нема за чим.
-static const char *testEndReason(const meas::Measurement &m) {
-    meas::TestStats st;
-    core.stats(st);
-
-    // «Струм зник» — це 2% від піку цього тесту, але не менше 5 мА.
-    // Абсолютний порог не годиться: у тесті на 60 мА і в тесті на 5 А
-    // «майже нуль» це різні величини.
-    const float floor_i = fmaxf(0.02f * st.i_max, 0.005f);
-    if (fabsf(m.current) > floor_i) { quiet_since = 0; warned_break = false; return nullptr; }
-
-    const uint32_t now = millis();
-    if (!quiet_since) {
-        quiet_since = now;
-        // Напруга саме в момент зникнення струму, а не через хвилину. Без
-        // цього навантаження з власним відсіченням (ESP32-C3 гасне близько
-        // 3.0 В) виглядало б як обрив: струм зник, а напруга без навантаження
-        // піднялась до 3.6 В і опинилась посередині діапазону.
-        v_at_quiet = m.voltage;
-        return nullptr;
-    }
-    if (now - quiet_since < kQuietHoldMs) return nullptr;
-
-    const float full = sys::packFull(profile);
-    const float cut  = sys::packCutoff(profile);
-    const float band = 0.10f * profile.cells;
-
-    const float v = isnan(v_at_quiet) ? m.voltage : v_at_quiet;
-    if (v >= full - band) return "CHARGE_COMPLETE";
-    // Ширше вікно, ніж для заряду: навантаження може згаснути саме, не
-    // дотягнувши до порогу плати захисту, і це теж завершення розряду.
-    if (v <= cut + 5.0f * band) return "DISCHARGE_END";
-
-    // Напруга посередині діапазону: струму немає, а батарея не повна й не
-    // розряджена. Це обрив, а не завершення — попереджаємо й не зупиняємо.
-    if (!warned_break) {
-        warned_break = true;
-        Serial.printf("!!! струму немає, а напруга при його зникненні була "
-                      "%.3f В посередині діапазону — схоже на обрив, "
-                      "тест не зупиняю\n", v);
-    }
-    return nullptr;
-}
-
-// §50. Пише loopTask, а не ядро: запис у NVS блокує на кілька мілісекунд,
-// що для §71 неприйнятно всередині вимірювального циклу.
-static void saveState(bool active) {
-    meas::Measurement m;
-    core.latest(m);
-    meas::TestStats st;
-    core.stats(st);
-
-    sys::TestState s{};
-    s.test_id   = sdlog.testId();
-    s.active    = active ? 1 : 0;
-    s.ah        = m.Ah;
-    s.wh        = m.Wh;
-    s.elapsed_s = core.elapsedSeconds();
-    s.v_start   = st.v_start;
-    s.v_min     = st.v_min;
-    s.v_max     = st.v_max;
-    s.i_max     = st.i_max;
-    s.t_max     = st.t_max;
-    s.samples   = st.samples;
-    s.soc_start = soc_start;
-    sys::saveTestState(s);
-}
+// Життєвий цикл тесту (старт/resume/abort/автозупинка/збереження стану) —
+// у sys::TestSession (§73). Тут лишається лише тонкий трамплін: колбеки
+// console/web — прості C-вказівники на функцію без user-data, тож потрібен
+// один глобальний session і однорядкова обгортка, як і раніше з startTest().
+static void startTest() { session.start(); }
 
 static void switchPage(int page) { display.setPage(page); }
 
@@ -344,8 +249,8 @@ static bool extraCommand(const char *cmd, char *arg) {
         return true;
     }
     if (!strcmp(cmd, "autostop")) {
-        if (arg) auto_stop = !strcmp(arg, "on");
-        Serial.printf("автозупинка %s\n", auto_stop ? "увімкнена" : "вимкнена");
+        if (arg) session.setAutoStop(!strcmp(arg, "on"));
+        Serial.printf("автозупинка %s\n", session.autoStop() ? "увімкнена" : "вимкнена");
         return true;
     }
     if (!strcmp(cmd, "soc")) {
@@ -356,31 +261,21 @@ static bool extraCommand(const char *cmd, char *arg) {
         Serial.printf("R внутрішній %.3f Ом (%s)\n", r,
                       profile.r_internal > 0.0f ? "з профілю"
                           : (r_measured > 0.0f ? "заміряно" : "невідомий, поправки немає"));
-        if (!isnan(soc_start)) Serial.printf("на старті тесту було %.1f%%\n", soc_start);
+        if (!isnan(session.socStart())) Serial.printf("на старті тесту було %.1f%%\n", session.socStart());
         if (profile.capacity_ah <= 0.0f)
             Serial.println(F("ємність профілю не задана — кулонометрія недоступна"));
         return true;
     }
     if (!strcmp(cmd, "resume")) {
-        if (!has_pending) { Serial.println(F("перерваного тесту немає")); return true; }
-        meas::TestStats st{};
-        st.v_start = pending.v_start; st.v_min = pending.v_min;
-        st.v_max = pending.v_max;     st.i_max = pending.i_max;
-        st.t_max = pending.t_max;     st.samples = pending.samples;
-        core.restoreStats(st);
-        core.restoreIntegration(pending.ah, pending.wh, pending.elapsed_s);
-        soc_start = pending.soc_start;
-        has_pending = false;
-        resume_armed = true;   // наступний `run` не обнулить відновлене
+        if (!session.resume()) { Serial.println(F("перерваного тесту немає")); return true; }
+        const sys::TestState &p = session.pending();
         Serial.printf("відновлено: %.5f Ah, %.5f Wh, %.0f с\n",
-                      pending.ah, pending.wh, pending.elapsed_s);
+                      p.ah, p.wh, p.elapsed_s);
         Serial.println(F("тест на паузі — `run` або кнопка в браузері, щоб продовжити"));
         return true;
     }
     if (!strcmp(cmd, "abort")) {
-        sys::clearTestState();
-        has_pending = false;
-        core.resetIntegration();
+        session.abort();
         Serial.println(F("перерваний тест закинуто, лічильники обнулено"));
         return true;
     }
@@ -389,9 +284,9 @@ static bool extraCommand(const char *cmd, char *arg) {
 
 static void printNetStatus() {
     if (!web.up()) { Serial.println(F("мережа ще піднімається")); return; }
-    Serial.printf("%s \"%s\"  ->  http://%s/\n",
+    Serial.printf("%s \"%s\"  ->  http://%s/  (або http://%s.local/)\n",
                   web.isAp() ? "точка доступу" : "мережа",
-                  web.ssid(), web.ip().toString().c_str());
+                  web.ssid(), web.ip().toString().c_str(), web.hostname());
 }
 
 static bool saveWifi(const char *ssid, const char *pass) {
@@ -485,10 +380,10 @@ void setup() {
     printProfile();
 
     // §51: перерваний тест не продовжується сам.
-    sys::TestState st;
-    if (sys::loadTestState(st) && st.active) {
-        pending = st;
-        has_pending = true;
+    session.begin(core, sdlog, profile);
+    session.loadPending();
+    if (session.hasPending()) {
+        const sys::TestState &st = session.pending();
         Serial.printf("\n!!! ПЕРЕРВАНИЙ ТЕСТ #%u: %.5f Ah, %.5f Wh, %.0f с\n",
                       st.test_id, st.ah, st.wh, st.elapsed_s);
         Serial.println(F("!!! `resume` — відновити лічильники, `abort` — закинути"));
@@ -530,56 +425,7 @@ void loop() {
                     soc_ocv);
     }
 
-    // --- §50: збереження стану тесту ---
-    const bool running = core.integrating();
-    const meas::Fault fault = core.fault();
-
-    if (running && !prev_running) {
-        // Старт: фіксуємо, з якого відсотка почали. Якщо спокою не бачили,
-        // беремо оцінку прямо зараз — вона гірша, але краще за нічого.
-        soc_start = isnan(soc_rest) ? soc_pct : soc_rest;
-        saveState(true);
-        next_state_save = millis() + sys::kSaveIntervalMs;
-    } else if (!running && prev_running) {
-        saveState(false);                     // §50: обов'язково при STOP
-    } else if (running && millis() >= next_state_save) {
-        next_state_save = millis() + sys::kSaveIntervalMs;
-        saveState(true);
-    }
-
-    // §29: тест має завершуватись сам, а не писати нулі годинами.
-    if (auto_stop && running) {
-        meas::Measurement m;
-        if (core.latest(m)) {
-            const char *reason = testEndReason(m);
-            if (reason) {
-                sdlog.setStopReason(reason);
-                core.setIntegrating(false);
-                saveState(false);
-                Serial.printf(">>> тест завершено: %s  (%.4f Ah, %.4f Wh, %.0f с)\n",
-                              reason, m.Ah, m.Wh, core.elapsedSeconds());
-            }
-        }
-    }
-
-    if (fault != prev_fault && fault != meas::Fault::NONE) {
-        // §27: STOP TEST, MARK FAULT, SAVE STATE. Досі виконувались лише
-        // другий і третій пункти, і це коштувало реальних даних: після
-        // відрізання захисту на 6.86 годині прилад ще сім годин інтегрував
-        // залишковий струм 0.7 мА і намотав 4.8 мАг з нічого.
-        //
-        // Зупинка тут, а не в ядрі: ядро не володіє станом тесту (§73),
-        // а loopTask — саме та задача, що ним керує.
-        // Причина зупинки — назва аварії (§58), а не дефолтне "stopped".
-        // Найчастіший випадок: плата захисту рве розряд, напруга падає в нуль,
-        // і NO_BATTERY спрацьовує за секунду — раніше за DISCHARGE_END із його
-        // хвилинною витримкою. Без цього рядка в INDEX.TXT лишалося б
-        // безлике "stopped" замість того, що насправді сталося.
-        sdlog.setStopReason(meas::faultName(fault));
-        core.setIntegrating(false);
-        saveState(running);
-        Serial.printf("!!! АВАРІЯ: %s — тест зупинено\n", meas::faultName(fault));
-    }
-    prev_running = running;
-    prev_fault = fault;
+    // Життєвий цикл тесту (§50 збереження стану, §29 автозавершення,
+    // §27 реакція на аварію) — у sys::TestSession, безумовно щоразу.
+    session.poll(soc_pct, soc_rest);
 }

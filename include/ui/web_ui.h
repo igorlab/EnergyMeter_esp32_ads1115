@@ -31,6 +31,11 @@ public:
     struct Config {
         const char *ap_ssid = "BatteryTester";
         const char *ap_pass = nullptr;   // nullptr = відкрита мережа
+        // mDNS: http://<hostname>.local/ — працює і в режимі AP, і в
+        // домашній мережі, тож адресу не треба щоразу шукати заново.
+        // Підтримується "з коробки" на macOS/iOS (Bonjour); на Android і
+        // Windows потрібен окремий клієнт mDNS — там лишається IP.
+        const char *hostname = "battery-tester";
         uint16_t    port = 80;
         uint32_t    sta_timeout_ms = 8000;
         UBaseType_t task_priority = 3;
@@ -72,6 +77,7 @@ public:
     bool      isAp() const { return ap_mode_; }
     IPAddress ip() const;
     const char *ssid() const { return ssid_; }
+    const char *hostname() const { return cfg_.hostname; }
 
     // Облікові дані домашньої мережі в NVS (§49). Порожній ssid — стерти.
     static bool saveCredentials(const char *ssid, const char *pass);
