@@ -158,6 +158,10 @@ void TftDisplay::run() {
     }
 }
 
+// Коротке натискання перемикає сторінку, довге (>= kLongPressMs) — старт/стоп
+// тесту. Рішення відкладене до відпускання: якби коротке спрацьовувало одразу
+// на натисканні (як робилось раніше, коли жест був лише один), довге тримання
+// встигло б і перемкнути сторінку, і застартувати тест тим самим натисканням.
 void TftDisplay::pollButton() {
     if (cfg_.button_pin < 0) return;
 
@@ -168,7 +172,13 @@ void TftDisplay::pollButton() {
 
     button_edge_ms_ = now;
     button_down_ = down;
-    if (down) setPage(-1);                    // реагуємо на натискання, не на відпускання
+    if (down) {
+        button_press_ms_ = now;
+    } else if (now - button_press_ms_ >= kLongPressMs) {
+        if (toggle_cb_) toggle_cb_();
+    } else {
+        setPage(-1);
+    }
 }
 
 void TftDisplay::clearFieldCache() {

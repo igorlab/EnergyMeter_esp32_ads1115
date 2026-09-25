@@ -213,6 +213,18 @@ static void updateSoc() {
 // один глобальний session і однорядкова обгортка, як і раніше з startTest().
 static void startTest() { session.start(); }
 
+// Довге натискання кнопки дисплея (GPIO27) — те саме, що `run`/`stop` у
+// консолі чи веб-кнопка: старт, якщо тест не йде, зупинка, якщо йде. Кнопка
+// нічого не рахує (§52), лише дзвонить у ту саму точку входу.
+static void toggleTest() {
+    if (core.integrating()) {
+        core.setIntegrating(false);
+    } else {
+        core.clearFault();
+        startTest();
+    }
+}
+
 static void switchPage(int page) { display.setPage(page); }
 
 // §51. Відновлюємо стан, але тест НЕ запускаємо — рішення за користувачем.
@@ -350,6 +362,7 @@ void setup() {
     if (!display.begin(dcfg, core, spi_bus)) {
         Serial.println(F("TFT: задача не створилась"));   // §64: не привід зупинятись
     }
+    display.setToggleTestHandler(&toggleTest);   // довге натискання GPIO27
 
     // Картка — строго ПІСЛЯ дисплея (README, §33.1) і на тому ж мьютексі.
     storage::SdLogger::Config scfg;
