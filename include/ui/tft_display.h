@@ -63,6 +63,12 @@ public:
     // Внутрішній опір, Ом. Рахує system-шар (§52).
     void setInternalR(float ohm) { r_int_ = ohm; }
 
+    // Довге натискання тієї самої кнопки (button_pin) — старт/стоп тесту.
+    // Дисплей життєвим циклом тесту не володіє (§52), тому лише сповіщає:
+    // рішення старт це чи стоп — за викликачем.
+    using ToggleTestHandler = void (*)();
+    void setToggleTestHandler(ToggleTestHandler h) { toggle_cb_ = h; }
+
 private:
     // Поле фіксованої ширини з кешем: перемальовується, лише коли змінився
     // текст або колір.
@@ -117,6 +123,12 @@ private:
     uint32_t next_rotate_ms_ = 0;
     uint32_t button_edge_ms_ = 0;
     bool     button_down_ = false;
+    // Рішення коротко/довго приймається на відпускання (не на натискання):
+    // інакше довге тримання встигло б і перемкнути сторінку, і застартувати
+    // тест одним жестом.
+    uint32_t button_press_ms_ = 0;
+    static constexpr uint32_t kLongPressMs = 800;
+    ToggleTestHandler toggle_cb_ = nullptr;
 
     volatile float soc_ = NAN;
     volatile float r_int_ = 0.0f;

@@ -15,6 +15,16 @@ static const char CHART_JS[] PROGMEM = R"rawliteral(
 // Межі шкали, вирівняні на круглий крок, завжди рівно 4 інтервали.
 // Круглі межі потрібні, щоб підписи стояли на місці: 3.880/3.885/3.890
 // замість 3.879/3.884/3.890, які змінюються від кожного відліку.
+// Кольори canvas беруться з :root у style.css — щоб лінія напруги на графіку
+// й цифра напруги в картці не могли розійтися. Читаємо один раз: у дорозі
+// getComputedStyle коштує layout, а малюємо ми 4 рази на секунду.
+let PAL=null;
+function pal(){
+ if(!PAL){const s=getComputedStyle(document.documentElement),g=k=>s.getPropertyValue('--'+k).trim();
+  PAL={volt:g('volt'),curr:g('curr'),dim:g('dim'),muted:g('muted'),
+       line:g('line'),grid:g('grid'),tip:g('tip')};}
+ return PAL;
+}
 function nice4(lo,hi,minSpan){
  let span=Math.max(hi-lo,minSpan);
  for(let k=0;k<10;k++){
@@ -37,11 +47,11 @@ function sticky(cv,key,lo,hi,minSpan){
  return (cv[key]=nice4(lo,hi,minSpan));
 }
 function drawChart(cv, pts, opt){
- const d=cv.getContext('2d'), W=cv.width=cv.clientWidth*2, H=cv.height=cv.clientHeight*2;
+ const d=cv.getContext('2d'), P=pal(), W=cv.width=cv.clientWidth*2, H=cv.height=cv.clientHeight*2;
  d.clearRect(0,0,W,H);
  const L=88,R=88,T=24,B=44, w=W-L-R, h=H-T-B;
  cv._pts=pts; cv._opt=opt;
- if(!pts.length){d.fillStyle='#5b6b7a';d.font='24px system-ui';d.fillText('no data',L,T+h/2);return;}
+ if(!pts.length){d.fillStyle=P.dim;d.font='24px system-ui';d.fillText('no data',L,T+h/2);return;}
  const t0=pts[0].t, t1=pts[pts.length-1].t||t0+1;
  function mm(k){let a=Infinity,b=-Infinity;for(const p of pts){if(p[k]<a)a=p[k];if(p[k]>b)b=p[k];}return [a,b];}
  const mv=mm('v'), mi=mm('i');
@@ -54,37 +64,37 @@ function drawChart(cv, pts, opt){
  // тому четвертий знак у підписі завжди нуль.
  const dec=st=>Math.min(3,Math.max(0,Math.ceil(-Math.log10(st))));
  const dv=dec(vs), di=dec(is);
- d.strokeStyle='#1e2a36'; d.lineWidth=2; d.font='22px system-ui'; d.textBaseline='middle';
+ d.strokeStyle=P.grid; d.lineWidth=2; d.font='22px system-ui'; d.textBaseline='middle';
  for(let k=0;k<=4;k++){const y=T+h*k/4;
   d.beginPath();d.moveTo(L,y);d.lineTo(L+w,y);d.stroke();
-  d.fillStyle='#42A2FF';d.textAlign='right';d.fillText((v1-vs*k).toFixed(dv),L-10,y);
-  d.fillStyle='#00d95a';d.textAlign='left';d.fillText((i1-is*k).toFixed(di),L+w+10,y);}
- d.fillStyle='#5b6b7a';d.textAlign='center';d.textBaseline='top';
+  d.fillStyle=P.volt;d.textAlign='right';d.fillText((v1-vs*k).toFixed(dv),L-10,y);
+  d.fillStyle=P.curr;d.textAlign='left';d.fillText((i1-is*k).toFixed(di),L+w+10,y);}
+ d.fillStyle=P.dim;d.textAlign='center';d.textBaseline='top';
  for(let k=0;k<=4;k++){const t=t0+(t1-t0)*k/4;d.fillText(opt.fmt(t),X(t),T+h+12);}
  function line(k,Y,c){d.strokeStyle=c;d.lineWidth=3;d.beginPath();
   pts.forEach((p,n)=>{const x=X(p.t),y=Y(p[k]);n?d.lineTo(x,y):d.moveTo(x,y);});d.stroke();}
- line('v',YV,'#42A2FF'); line('i',YI,'#00d95a');
+ line('v',YV,P.volt); line('i',YI,P.curr);
  d.textAlign='left';d.textBaseline='alphabetic';
- d.fillStyle='#42A2FF';d.fillText('V',L,18); d.fillStyle='#00d95a';d.fillText('A',L+w-14,18);
+ d.fillStyle=P.volt;d.fillText('V',L,18); d.fillStyle=P.curr;d.fillText('A',L+w-14,18);
  if(cv._hx!=null) cursor(cv);
 }
 function cursor(cv){
- const d=cv.getContext('2d'), g=cv._g, pts=cv._pts, opt=cv._opt;
+ const d=cv.getContext('2d'), P=pal(), g=cv._g, pts=cv._pts, opt=cv._opt;
  if(!g||!pts||!pts.length)return;
  let n=0,best=1e9;
  for(let k=0;k<pts.length;k++){const dx=Math.abs(g.X(pts[k].t)-cv._hx);if(dx<best){best=dx;n=k;}}
  const p=pts[n], x=g.X(p.t);
- d.strokeStyle='#44586e';d.lineWidth=2;d.setLineDash([6,6]);
+ d.strokeStyle=P.dim;d.lineWidth=2;d.setLineDash([6,6]);
  d.beginPath();d.moveTo(x,g.T);d.lineTo(x,g.T+g.h);d.stroke();d.setLineDash([]);
- d.fillStyle='#42A2FF';d.beginPath();d.arc(x,g.YV(p.v),7,0,6.284);d.fill();
- d.fillStyle='#00d95a';d.beginPath();d.arc(x,g.YI(p.i),7,0,6.284);d.fill();
+ d.fillStyle=P.volt;d.beginPath();d.arc(x,g.YV(p.v),7,0,6.284);d.fill();
+ d.fillStyle=P.curr;d.beginPath();d.arc(x,g.YI(p.i),7,0,6.284);d.fill();
  const bw=196,bh=104, bx=(x+16+bw>g.L+g.w)?x-16-bw:x+16, by=g.T+8;
- d.fillStyle='rgba(8,12,18,.92)';d.strokeStyle='#2b3a4d';d.lineWidth=2;
+ d.fillStyle=P.tip;d.strokeStyle=P.line;d.lineWidth=2;
  d.beginPath();d.roundRect(bx,by,bw,bh,10);d.fill();d.stroke();
  d.font='24px ui-monospace,monospace';d.textAlign='left';d.textBaseline='alphabetic';
- d.fillStyle='#8aa0b4';d.fillText(opt.fmt(p.t),bx+14,by+32);
- d.fillStyle='#42A2FF';d.fillText(p.v.toFixed(3)+' V',bx+14,by+64);
- d.fillStyle='#00d95a';d.fillText(p.i.toFixed(3)+' A',bx+14,by+94);
+ d.fillStyle=P.muted;d.fillText(opt.fmt(p.t),bx+14,by+32);
+ d.fillStyle=P.volt;d.fillText(p.v.toFixed(3)+' V',bx+14,by+64);
+ d.fillStyle=P.curr;d.fillText(p.i.toFixed(3)+' A',bx+14,by+94);
 }
 function chartHover(cv){
  cv.style.cursor='crosshair';
@@ -109,56 +119,71 @@ function q3(x){return Math.round(x*1000)/1000;}
 )rawliteral";
 
 static const char STYLE_CSS[] PROGMEM = R"rawliteral(
-:root{color-scheme:dark}
+/* Палітра взята з сусіднього проєкту kh-station: нейтральні сірі замість
+   синювато-чорних і семантичні кольори GitHub-типу. Синього в тій палітрі
+   немає взагалі, а напруга має бути синьою (ТЗ §34.4) — тому --volt доданий
+   із тієї ж родини, що й --curr / --warn / --bad.
+   Кольори живуть ЛИШЕ тут: CHART_JS читає їх звідси через getComputedStyle,
+   інакше canvas і HTML розходяться при першій же правці. */
+:root{
+ color-scheme:dark;
+ --bg:#2c2c2c;--card:#333;--surface-2:#3b3b3b;--fill:#4a4a4a;--line:#555;
+ --fg:#fff;--muted:#b9b9b9;--dim:#a2a2a2;
+ --volt:#58A6FF;--curr:#3FB950;--warn:#E3A008;--bad:#F05252;--bad-strong:#DA3633;
+ --chart:#262626;--grid:#3f3f3f;--tip:rgba(24,24,24,.94)
+}
 *{box-sizing:border-box}
-body{margin:0;background:#0b0f14;color:#e8eef4;font:15px/1.55 system-ui,-apple-system,Segoe UI,Roboto,sans-serif}
-header{display:flex;align-items:baseline;gap:16px;flex-wrap:wrap;padding:14px 20px;border-bottom:1px solid #1e2a36}
+body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.55 system-ui,-apple-system,Segoe UI,Roboto,sans-serif}
+header{display:flex;align-items:baseline;gap:16px;flex-wrap:wrap;padding:14px 20px;border-bottom:1px solid var(--line)}
 header h1{font-size:16px;font-weight:500;margin:0;letter-spacing:.04em}
-header a{color:#8aa0b4;text-decoration:none;margin-right:14px}
-header a:hover{color:#42A2FF}
+header a{color:var(--muted);text-decoration:none;margin-right:14px}
+header a:hover{color:var(--volt)}
 main{padding:20px;max-width:1100px}
 .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;margin-bottom:20px}
-.cell{background:#111823;border:1px solid #1e2a36;border-radius:10px;padding:12px 14px}
-.cell .k{font-size:12px;color:#5b6b7a;text-transform:uppercase;letter-spacing:.08em}
+.cell{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:12px 14px}
+.cell .k{font-size:12px;color:var(--dim);text-transform:uppercase;letter-spacing:.08em}
 .cell .v{font-size:26px;font-variant-numeric:tabular-nums;margin-top:2px}
-.volt{color:#42A2FF}.curr{color:#00d95a}.warn{color:#ffd23f}.bad{color:#ff5c5c}.dim{color:#5b6b7a}
+.volt{color:var(--volt)}.curr{color:var(--curr)}.warn{color:var(--warn)}.bad{color:var(--bad)}.dim{color:var(--dim)}
 .bar{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin:0 0 16px}
-button{font:15px/1 system-ui;color:#e8eef4;background:#182231;border:1px solid #2b3a4d;
+button{font:15px/1 system-ui;color:var(--fg);background:var(--surface-2);border:1px solid var(--line);
  border-radius:8px;padding:11px 20px;cursor:pointer}
-button:hover{background:#1f2b3c;border-color:#3b4d63}
+button:hover{background:var(--fill);border-color:#6d6d6d}
 button:active{transform:scale(.985)}
-button.rec{background:#1d3a24;border-color:#2f6b3c;color:#7ee89a}
-button.rec:hover{background:#24492d}
-button.on{background:#4a1f1f;border-color:#8a3535;color:#ffb3b3}
-button.on:hover{background:#5c2727}
-select{margin-left:auto;font:14px/1 system-ui;color:#e8eef4;background:#182231;
- border:1px solid #2b3a4d;border-radius:8px;padding:9px 12px}
-canvas{width:100%;height:340px;background:#111823;border:1px solid #1e2a36;border-radius:10px}
+/* Тонована заливка замість власного фону — так само, як бейджі стану в
+   kh-station: колір статусу читається, а кнопка лишається кнопкою. */
+button.rec{background:rgba(63,185,80,.14);border-color:rgba(63,185,80,.45);color:var(--curr)}
+button.rec:hover{background:rgba(63,185,80,.22);border-color:rgba(63,185,80,.6)}
+button.on{background:var(--bad-strong);border-color:var(--bad-strong);color:#fff}
+button.on:hover{background:#c22d2b;border-color:#c22d2b}
+select{margin-left:auto;font:14px/1 system-ui;color:var(--fg);background:var(--surface-2);
+ border:1px solid var(--line);border-radius:8px;padding:9px 12px}
+canvas{width:100%;height:340px;background:var(--chart);border:1px solid var(--line);border-radius:10px}
 table{border-collapse:collapse;width:100%;font-variant-numeric:tabular-nums;font-size:13px}
-th,td{padding:5px 10px;text-align:right;border-bottom:1px solid #16202b}
-th{color:#5b6b7a;font-weight:500;text-align:right;position:sticky;top:0;background:#0b0f14}
+th,td{padding:5px 10px;text-align:right;border-bottom:1px solid var(--fill)}
+th{color:var(--dim);font-weight:500;text-align:right;position:sticky;top:0;background:var(--bg)}
 th:first-child,td:first-child{text-align:left}
-.wrap{max-height:460px;overflow:auto;border:1px solid #1e2a36;border-radius:10px;margin-top:16px}
+.wrap{max-height:460px;overflow:auto;border:1px solid var(--line);border-radius:10px;margin-top:16px}
 .files{list-style:none;padding:0;margin:0}
-.files li{display:flex;align-items:center;gap:14px;padding:11px 14px;border-bottom:1px solid #16202b}
-.files a{color:#42A2FF;text-decoration:none}
-.sec{background:#111823;border:1px solid #1e2a36;border-radius:12px;padding:14px 18px;margin:0 0 16px}
+.files li{display:flex;align-items:center;gap:14px;padding:11px 14px;border-bottom:1px solid var(--fill)}
+.files a{color:var(--volt);text-decoration:none}
+.sec{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:14px 18px;margin:0 0 16px}
 .sec h2{font-size:14px;font-weight:500;letter-spacing:.06em;text-transform:uppercase;
- color:#8aa0b4;margin:0 0 12px}
+ color:var(--muted);margin:0 0 12px}
 .row{display:flex;align-items:center;gap:14px;padding:6px 0}
-.row label{width:150px;color:#8aa0b4;font-size:14px}
-.ro{font-variant-numeric:tabular-nums;color:#e8eef4}
-input,select{font:14px/1 ui-monospace,monospace;color:#e8eef4;background:#0d141d;
- border:1px solid #2b3a4d;border-radius:7px;padding:8px 10px;width:190px}
-input:focus,select:focus{outline:none;border-color:#42A2FF}
-.hint{font-size:13px;color:#5b6b7a;margin:8px 0 0;line-height:1.5}
+.row label{width:150px;color:var(--muted);font-size:14px}
+.ro{font-variant-numeric:tabular-nums;color:var(--fg)}
+input,select{font:14px/1 ui-monospace,monospace;color:var(--fg);background:var(--surface-2);
+ border:1px solid var(--line);border-radius:7px;padding:8px 10px;width:190px}
+input:focus,select:focus{outline:none;border-color:var(--volt)}
+.hint{font-size:13px;color:var(--dim);margin:8px 0 0;line-height:1.5}
 .cal{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:12px;
- padding-top:12px;border-top:1px solid #1e2a36}
-.cal b{color:#e8eef4;font-variant-numeric:tabular-nums}
-code{background:#0d141d;padding:2px 6px;border-radius:4px;font-size:12px}
-.files .sz{color:#5b6b7a;font-size:13px;margin-left:auto;font-variant-numeric:tabular-nums}
-.files button.rm{font-size:13px;padding:6px 12px;background:#2a1a1a;border-color:#5c2a2a;color:#e0a0a0}
-.files button.rm:hover{background:#3c2222;border-color:#7a3838}
+ padding-top:12px;border-top:1px solid var(--line)}
+.cal b{color:var(--fg);font-variant-numeric:tabular-nums}
+code{background:var(--surface-2);padding:2px 6px;border-radius:4px;font-size:12px}
+.files .sz{color:var(--dim);font-size:13px;margin-left:auto;font-variant-numeric:tabular-nums}
+.files button.rm{font-size:13px;padding:6px 12px;background:rgba(240,82,82,.12);
+ border-color:rgba(240,82,82,.4);color:var(--bad)}
+.files button.rm:hover{background:rgba(240,82,82,.2);border-color:rgba(240,82,82,.6)}
 .files li>a:first-child{min-width:150px}
 )rawliteral";
 
@@ -228,12 +253,12 @@ async function tick(){
   t.textContent=hms(s.elapsed);
   // Міліоми — звична одиниця для внутрішнього опору елемента; в омах воно
   // читалось би як 0.356 і плуталось із рештою дробових величин.
-  rint.textContent=s.rint>0?(s.rint*1000).toFixed(0)+' m\u03A9':'&mdash;';
+  rint.textContent=s.rint>0?(s.rint*1000).toFixed(0)+' m\u03A9':'\u2014';
   if(s.soc>=0){
    soc.textContent=s.soc.toFixed(0)+' %';
    soc.className='v '+(s.soc<15?'bad':s.soc<30?'warn':'curr');
-   sock.textContent='charge &middot; from voltage';
-  }else{soc.textContent='&mdash;';soc.className='v dim';sock.textContent='charge';}
+   sock.textContent='charge \u00B7 from voltage';
+  }else{soc.textContent='\u2014';soc.className='v dim';sock.textContent='charge';}
   const bits=[s.running?'RUNNING':'PAUSED', s.mode];
   if(s.fault!=='NONE')bits.push('FAULT '+s.fault);
   if(s.simulated)bits.push('SIM');
